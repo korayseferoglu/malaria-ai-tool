@@ -7,7 +7,7 @@ import cv2
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Malaria Diagnosis AI", layout="centered")
 
-# --- CSS STYLING (Clean & Professional) ---
+# --- CSS STYLING ---
 st.markdown("""
 <style>
     .main {
@@ -16,26 +16,26 @@ st.markdown("""
     h1 {
         color: #333333;
         text-align: center;
-        font-family: 'Helvetica', sans-serif;
+        font-family: 'Arial', sans-serif;
     }
     .stButton>button {
         width: 100%;
         background-color: #000000;
         color: white;
-        border-radius: 5px;
+        border-radius: 8px;
         height: 50px;
         font-weight: bold;
         border: none;
+        margin-top: 20px;
     }
     .stButton>button:hover {
         background-color: #333333;
         color: white;
     }
     .stFileUploader {
-        padding: 20px;
-        border: 2px dashed #ccc;
+        border: 2px dashed #ddd;
         border-radius: 10px;
-        text-align: center;
+        padding: 20px;
     }
     div.stSpinner > div {
         text-align:center;
@@ -48,9 +48,9 @@ st.markdown("""
 # --- HEADER ---
 st.title("Malaria Detection System")
 st.markdown("""
-<div style='text-align: center; color: #555; margin-bottom: 30px;'>
-    Scientific Validation Tool based on Convolutional Neural Networks (CNN) & Grad-CAM Explainability.
-    Upload a thin blood smear microscopy image to detect <i>Plasmodium</i> parasites.
+<div style='text-align: center; color: #666; font-size: 16px; margin-bottom: 30px;'>
+    Scientific Validation Tool based on CNN & Grad-CAM Explainability.
+    Upload a blood smear image to detect <i>Plasmodium</i> parasites.
 </div>
 """, unsafe_allow_html=True)
 
@@ -64,10 +64,9 @@ try:
 except Exception as e:
     st.error(f"Error loading model: {e}")
 
-# --- GRAD-CAM EXPLAINABILITY FUNCTION (FIXED) ---
+# --- GRAD-CAM EXPLAINABILITY FUNCTION (ROBUST FIX) ---
 def make_gradcam_heatmap(img_array, model, last_conv_layer_name="last_conv_layer"):
     # Create a model that maps the input image to the activations of the last conv layer
-    # and the output predictions
     grad_model = tf.keras.models.Model(
         inputs=model.inputs,
         outputs=[model.get_layer(last_conv_layer_name).output, model.output]
@@ -76,12 +75,13 @@ def make_gradcam_heatmap(img_array, model, last_conv_layer_name="last_conv_layer
     with tf.GradientTape() as tape:
         last_conv_output, preds = grad_model(img_array)
         
-        # ERROR FIX IS HERE:
-        # Instead of complex slicing that caused the Tuple Error,
-        # we directly access the index 0 since it is a binary output (1 neuron).
-        class_channel = preds[:, 0]
+        # --- CRITICAL FIX IS HERE ---
+        # Instead of 'preds[:, 0]' which fails if preds is a list,
+        # we use 'preds[0]' which works for both Lists and Tensors.
+        # This grabs the prediction for the single image in the batch.
+        class_channel = preds[0]
 
-    # Compute gradients
+    # Compute gradients of the class channel with respect to the feature map
     grads = tape.gradient(class_channel, last_conv_output)
     
     # Pool the gradients
@@ -92,20 +92,18 @@ def make_gradcam_heatmap(img_array, model, last_conv_layer_name="last_conv_layer
     heatmap = last_conv_output @ pooled_grads[..., tf.newaxis]
     heatmap = tf.squeeze(heatmap)
     
-    # Normalize
+    # Normalize heatmap
     heatmap = tf.maximum(heatmap, 0) / tf.math.reduce_max(heatmap)
     return heatmap.numpy()
 
-# --- MAIN INTERFACE (SINGLE PAGE LOGIC) ---
+# --- MAIN LOGIC ---
 
-# 1. File Uploader Section
 uploaded_file = st.file_uploader("Upload a microscopy image (JPG/PNG)", type=["jpg", "png", "jpeg"])
 
 if uploaded_file is not None:
     st.markdown("---")
     
-    # 2. Layout: Image on Left, Analysis on Right (or Top/Down depending on mobile)
-    # Using columns to center the workflow
+    # Layout using Columns
     col1, col2 = st.columns([1, 1])
     
     with col1:
@@ -115,42 +113,39 @@ if uploaded_file is not None:
 
     with col2:
         st.subheader("Analysis")
-        st.write("Click the button below to start the AI inference process.")
+        st.write("Click below to run the diagnostic AI model.")
         analyze_btn = st.button("RUN DIAGNOSIS")
 
-    # 3. Execution Block
+    # Execution Block
     if analyze_btn:
-        with st.spinner('Processing image... Please wait.'):
-            # Preprocessing
+        with st.spinner('AI is processing the image...'):
+            # 1. Preprocessing
             img_array = np.array(image.resize((128, 128))) / 255.0
             img_array = np.expand_dims(img_array, axis=0)
             
-            # Prediction
+            # 2. Prediction
             prediction = model.predict(img_array)[0][0]
             
-            # Logic: < 0.5 is Parasitized (based on your training data), > 0.5 is Uninfected
+            # Logic: Training labels were 0=Parasitized, 1=Uninfected
             is_infected = prediction < 0.5 
             confidence = (1 - prediction) if is_infected else prediction
             
-            # --- RESULTS SECTION ---
+            # 3. Results Container
             st.markdown("### Results Report")
-            
-            # Create a clean container for results
             result_container = st.container()
             
             if is_infected:
                 result_container.error("DIAGNOSIS: POSITIVE (INFECTED)")
                 result_container.markdown(f"**Confidence Score:** {confidence*100:.2f}%")
-                result_container.write("The AI model detected high probability of Plasmodium parasites.")
+                result_container.write("The AI detected Plasmodium parasites in this cell.")
             else:
                 result_container.success("DIAGNOSIS: NEGATIVE (HEALTHY)")
                 result_container.markdown(f"**Confidence Score:** {confidence*100:.2f}%")
-                result_container.write("No parasites detected. The cell appears healthy.")
+                result_container.write("No parasites detected. The cell is healthy.")
             
-            # --- GRAD-CAM VISUALIZATION ---
+            # 4. Grad-CAM Visualization
             st.markdown("---")
             st.subheader("Visual Evidence (Grad-CAM)")
-            st.write("The red highlighted regions indicate where the AI detected the anomaly.")
             
             try:
                 # Generate Heatmap
@@ -166,9 +161,9 @@ if uploaded_file is not None:
                 original_img = np.array(image)
                 superimposed = cv2.addWeighted(original_img, 0.6, heatmap, 0.4, 0)
                 
-                # Display Result
-                st.image(superimposed, caption="AI Attention Map", use_container_width=True)
+                # Display
+                st.image(superimposed, caption="Red areas indicate AI attention (Parasite location)", use_container_width=True)
                 
             except Exception as e:
                 st.warning("Could not generate heatmap.")
-                st.write(f"Technical details: {e}")
+                st.code(f"Error: {e}")
